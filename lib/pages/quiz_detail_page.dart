@@ -335,23 +335,23 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
           )
         : const SizedBox();
 
-    if (type == 'MCQ') {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            children: List.generate(options.length, (i) {
-              return Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Radio<String>(
-                    value: options[i],
-                    groupValue: correct_answer,
-                    onChanged: isCreator
-                        ? (val) => docRef.update({'correct_answer': val})
-                        : null,
+    if (isCreator) {
+      // Creator view - show answer fields
+      if (type == 'MCQ') {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: List.generate(options.length, (i) {
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                Radio<String>(
+                value: options[i],
+                  groupValue: correct_answer,
+                  onChanged: (val) => docRef.update({'correct_answer': val},
                   ),
                   isCreator
                       ? SizedBox(

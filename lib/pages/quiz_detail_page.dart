@@ -30,7 +30,7 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
 
   TextEditingController? _titleController;
   TextEditingController? _descriptionController;
-  Map<DocumentReference, TextEditingController> _questionControllers = {};
+  final Map<DocumentReference, TextEditingController> _questionControllers = {};
 
   @override
   void initState() {
@@ -57,8 +57,9 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
       _withMarks = quizData?['withMarks'] ?? true;
       _isLoading = false;
     });
-
-    _calculateTotalMarks();
+    if (_withMarks) {
+      _calculateTotalMarks();
+    }
   }
 
   Future<void> _calculateTotalMarks() async {
@@ -82,41 +83,54 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
   }
 
   void _openSettingsDialog() {
+    bool tempShuffle = _shuffle;
+    bool tempWithMarks = _withMarks;
+
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text("Quiz Settings"),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SwitchListTile(
-              title: const Text("Shuffle Questions"),
-              value: _shuffle,
-              onChanged: (val) {
-                setState(() {
-                  _shuffle = val;
-                });
-                widget.quizRef.update({'shuffle': val});
-              },
+      builder: (_) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text("Quiz Settings"),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SwitchListTile(
+                  title: const Text("Shuffle Questions"),
+                  value: tempShuffle,
+                  onChanged: (val) {
+                    setDialogState(() {
+                      tempShuffle = val;
+                    });
+                    widget.quizRef.update({'shuffle': val});
+                  },
+                ),
+                SwitchListTile(
+                  title: const Text("Enable Marks"),
+                  value: tempWithMarks,
+                  onChanged: (val) {
+                    setDialogState(() {
+                      tempWithMarks = val;
+                    });
+                    widget.quizRef.update({'withMarks': val});
+                  },
+                ),
+              ],
             ),
-            SwitchListTile(
-              title: const Text("Enable Marks"),
-              value: _withMarks,
-              onChanged: (val) {
-                setState(() {
-                  _withMarks = val;
-                });
-                widget.quizRef.update({'withMarks': val});
-              },
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Close"),
-          )
-        ],
+            actions: [
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    _shuffle = tempShuffle;
+                    _withMarks = tempWithMarks;
+                  });
+                  Navigator.pop(context);
+                },
+                child: const Text("Close"),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -129,18 +143,19 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
       appBar: AppBar(
         title: Text(_titleController?.text ?? widget.quizTitle),
         actions: [
-          Container(
-            margin: const EdgeInsets.only(right: 12, top: 12),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.green.shade600,
-              borderRadius: BorderRadius.circular(10),
+          if (_withMarks)
+            Container(
+              margin: const EdgeInsets.only(right: 12, top: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.green.shade600,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                "Marks: $_totalMarks",
+                style: const TextStyle(color: Colors.white),
+              ),
             ),
-            child: Text(
-              "Marks: $_totalMarks",
-              style: const TextStyle(color: Colors.white),
-            ),
-          ),
           if (_isCreator)
             IconButton(
               icon: const Icon(Icons.settings),
@@ -196,7 +211,14 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
               stream: widget.quizRef.collection('questions').snapshots(),
               builder: (context, snapshot) {
                 if (!snapshot.hasData) return const CircularProgressIndicator();
-                final docs = snapshot.data!.docs;
+                // final docs = snapshot.data!.docs;
+                List<QueryDocumentSnapshot> docs = snapshot.data!.docs;
+
+                // Shuffle questions for non-creators if _shuffle is enabled
+                if (!_isCreator && _shuffle) {
+                  docs.shuffle();
+                }
+
                 _calculateTotalMarks();
 
                 return ListView.builder(
@@ -315,13 +337,14 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
     );
   }
 
+  // Replace the _buildAnswerWidget method in quiz_detail_page.dart with this:
   Widget _buildAnswerWidget(String type, Map<String, dynamic> data,
       DocumentReference docRef, bool isCreator) {
     final List<String> options = List<String>.from(data['options'] ?? []);
-    final dynamic correct_answer = data['correct_answer'];
+    final dynamic correctAnswer = data['correct_answer'];
     final int marks = data['marks'] ?? 1;
 
-    Widget marksField = isCreator
+    Widget marksField = isCreator && _withMarks
         ? TextFormField(
             initialValue: marks.toString(),
             keyboardType: TextInputType.number,
@@ -348,28 +371,27 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
                 return Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                Radio<String>(
-                value: options[i],
-                  groupValue: correct_answer,
-                  onChanged: (val) => docRef.update({'correct_answer': val},
-                  ),
-                  isCreator
-                      ? SizedBox(
-                          width: 100,
-                          child: TextFormField(
-                            initialValue: options[i],
-                            onChanged: (val) {
-                              options[i] = val;
-                              docRef.update({'options': options});
-                            },
-                          ),
-                        )
-                      : Text(options[i]),
-                ],
-              );
-            }),
-          ),
-          if (isCreator)
+                    Radio<String>(
+                      value: options[i],
+                      groupValue: correctAnswer,
+                      onChanged: (val) => docRef.update(
+                        {'correct_answer': val},
+                      ),
+                    ),
+                    SizedBox(
+                      width: 100,
+                      child: TextFormField(
+                        initialValue: options[i],
+                        onChanged: (val) {
+                          options[i] = val;
+                          docRef.update({'options': options});
+                        },
+                      ),
+                    )
+                  ],
+                );
+              }),
+            ),
             TextButton.icon(
               onPressed: () {
                 options.add('Option ${options.length + 1}');
@@ -378,53 +400,48 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
               icon: const Icon(Icons.add),
               label: const Text('Add Option'),
             ),
-          marksField,
-        ],
-      );
-    } else if (type == 'MSQ') {
-      List<String> selected =
-          correct_answer is List ? List<String>.from(correct_answer) : [];
+            _withMarks ? marksField : const SizedBox(),
+          ],
+        );
+      } else if (type == 'MSQ') {
+        List<String> selected =
+            correctAnswer is List ? List<String>.from(correctAnswer) : [];
 
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            children: List.generate(options.length, (i) {
-              return Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Checkbox(
-                    value: selected.contains(options[i]),
-                    onChanged: isCreator
-                        ? (val) {
-                            if (val == true) {
-                              selected.add(options[i]);
-                            } else {
-                              selected.remove(options[i]);
-                            }
-                            docRef.update({'correct_answer': selected});
-                          }
-                        : null,
-                  ),
-                  isCreator
-                      ? SizedBox(
-                          width: 100,
-                          child: TextFormField(
-                            initialValue: options[i],
-                            onChanged: (val) {
-                              options[i] = val;
-                              docRef.update({'options': options});
-                            },
-                          ),
-                        )
-                      : Text(options[i]),
-                ],
-              );
-            }),
-          ),
-          if (isCreator)
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: List.generate(options.length, (i) {
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Checkbox(
+                      value: selected.contains(options[i]),
+                      onChanged: (val) {
+                        if (val == true) {
+                          selected.add(options[i]);
+                        } else {
+                          selected.remove(options[i]);
+                        }
+                        docRef.update({'correct_answer': selected});
+                      },
+                    ),
+                    SizedBox(
+                      width: 100,
+                      child: TextFormField(
+                        initialValue: options[i],
+                        onChanged: (val) {
+                          options[i] = val;
+                          docRef.update({'options': options});
+                        },
+                      ),
+                    ),
+                  ],
+                );
+              }),
+            ),
             TextButton.icon(
               onPressed: () {
                 options.add('Option ${options.length + 1}');
@@ -433,83 +450,127 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
               icon: const Icon(Icons.add),
               label: const Text('Add Option'),
             ),
-          marksField,
-        ],
-      );
-    } else if (type == 'Numerical') {
-      final num? minValue =
-          (correct_answer is Map && correct_answer.containsKey('min'))
-              ? correct_answer['min']
-              : (correct_answer is num ? correct_answer : null);
-      final num? maxValue =
-          (correct_answer is Map && correct_answer.containsKey('max'))
-              ? correct_answer['max']
-              : null;
+            _withMarks ? marksField : const SizedBox(),
+          ],
+        );
+      } else if (type == 'Numerical') {
+        final num? minValue =
+            (correctAnswer is Map && correctAnswer.containsKey('min'))
+                ? correctAnswer['min']
+                : (correctAnswer is num ? correctAnswer : null);
+        final num? maxValue =
+            (correctAnswer is Map && correctAnswer.containsKey('max'))
+                ? correctAnswer['max']
+                : null;
 
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text("Numerical Answer (exact or range)"),
-          Row(
-            children: [
-              Expanded(
-                child: TextFormField(
-                  initialValue: minValue?.toString() ?? '',
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(labelText: "Min / Exact"),
-                  onChanged: (val) {
-                    final parsed = double.tryParse(val);
-                    if (parsed != null) {
-                      if (maxValue != null) {
-                        docRef.update({
-                          'correct_answer': {'min': parsed, 'max': maxValue}
-                        });
-                      } else {
-                        docRef.update({'correct_answer': parsed});
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("Numerical Answer (exact or range)"),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    initialValue: minValue?.toString() ?? '',
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: "Min / Exact"),
+                    onChanged: (val) {
+                      final parsed = double.tryParse(val);
+                      if (parsed != null) {
+                        if (maxValue != null) {
+                          docRef.update({
+                            'correct_answer': {'min': parsed, 'max': maxValue}
+                          });
+                        } else {
+                          docRef.update({'correct_answer': parsed});
+                        }
                       }
-                    }
-                  },
+                    },
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextFormField(
-                  initialValue: maxValue?.toString() ?? '',
-                  enabled: minValue != null,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  decoration:
-                      const InputDecoration(labelText: "Max (optional)"),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextFormField(
+                    initialValue: maxValue?.toString() ?? '',
+                    enabled: minValue != null,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration:
+                        const InputDecoration(labelText: "Max (optional)"),
+                    onChanged: (val) {
+                      final parsed = double.tryParse(val);
+                      if (parsed != null && minValue != null) {
+                        docRef.update({
+                          'correct_answer': {'min': minValue, 'max': parsed}
+                        });
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+            _withMarks ? marksField : const SizedBox(),
+          ],
+        );
+      } else if (type == 'Short') {
+        return Column(
+          children: [
+            TextFormField(
+              initialValue: correctAnswer ?? '',
+              decoration: const InputDecoration(labelText: "Correct Answer"),
+              onChanged: (val) => docRef.update({'correct_answer': val.trim()}),
+            ),
+            _withMarks ? marksField : const SizedBox(),
+          ],
+        );
+      } else if (type == 'Long') {
+        return _withMarks ? marksField : const SizedBox();
+      }
+    } else {
+      // Student view - show answer input fields
+      if (type == 'MCQ') {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ...options.map((opt) => RadioListTile(
+                  title: Text(opt),
+                  value: opt,
+                  groupValue: null, // Don't show correct answer
                   onChanged: (val) {
-                    final parsed = double.tryParse(val);
-                    if (parsed != null && minValue != null) {
-                      docRef.update({
-                        'correct_answer': {'min': minValue, 'max': parsed}
-                      });
-                    }
+                    // Store answer for submission
                   },
-                ),
-              ),
-            ],
-          ),
-          marksField,
-        ],
-      );
-    } else if (type == 'Short') {
-      return Column(
-        children: [
-          TextFormField(
-            initialValue: correct_answer ?? '',
-            decoration: const InputDecoration(labelText: "Answer (trimmed)"),
-            onChanged: (val) => docRef.update(
-                {'correct_answer': val.trim()}), // Trimmed directly here
-          ),
-          marksField,
-        ],
-      );
-    } else if (type == 'Long') {
-      return marksField; // No correct answer input, manual checking
+                )),
+          ],
+        );
+      } else if (type == 'MSQ') {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ...options.map((opt) => CheckboxListTile(
+                  title: Text(opt),
+                  value: false, // Don't show correct answer
+                  onChanged: (val) {
+                    // Store answer for submission
+                  },
+                )),
+          ],
+        );
+      } else if (type == 'Numerical') {
+        return TextFormField(
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(labelText: "Your Answer"),
+        );
+      } else if (type == 'Short') {
+        return TextFormField(
+          decoration: const InputDecoration(labelText: "Your Answer"),
+        );
+      } else if (type == 'Long') {
+        return TextFormField(
+          maxLines: 5,
+          decoration: const InputDecoration(labelText: "Your Answer"),
+        );
+      }
     }
 
     return const SizedBox();

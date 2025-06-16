@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:go_router/go_router.dart';
@@ -159,34 +162,47 @@ class LoginPage extends StatelessWidget {
       BuildContext context, AppDataProvider provider) async {
     EasyLoading.show(status: "Please Wait");
     try {
-      final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
-      if (googleUser == null) {
-        EasyLoading.dismiss();
-        return;
+      UserCredential userCredential;
+      final googleSignIn = GoogleSignIn();
+      await googleSignIn.signOut(); // 🔑 Force sign-out to show account picker
+      if (kIsWeb ||
+          Platform.isWindows ||
+          Platform.isLinux ||
+          Platform.isMacOS) {
+        // ✅ Web & Desktop (Popup sign-in)
+        GoogleAuthProvider authProvider = GoogleAuthProvider();
+        userCredential =
+            await FirebaseAuth.instance.signInWithPopup(authProvider);
+      } else {
+        // ✅ Android / iOS
+        final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
+        if (googleUser == null) {
+          EasyLoading.dismiss();
+          return;
+        }
+
+        final GoogleSignInAuthentication googleAuth =
+            await googleUser.authentication;
+
+        final credential = GoogleAuthProvider.credential(
+          accessToken: googleAuth.accessToken,
+          idToken: googleAuth.idToken,
+        );
+
+        userCredential =
+            await FirebaseAuth.instance.signInWithCredential(credential);
       }
 
-      final GoogleSignInAuthentication googleAuth =
-          await googleUser.authentication;
-      final credential = GoogleAuthProvider.credential(
-        accessToken: googleAuth.accessToken,
-        idToken: googleAuth.idToken,
-      );
-
-      final userCredential =
-          await FirebaseAuth.instance.signInWithCredential(credential);
       final User? user = userCredential.user;
       if (user == null) {
         throw FirebaseAuthException(
             message: "Google Sign-In Failed", code: "google_sign_in_failed");
       }
 
-      // Store user data in Firestore
       await _storeUserData(user);
-
-      // ✅ NEW: Store UID in provider
       provider.setUserId(user.uid);
 
-      // ✅ NEW: Load all class -> creatorId mappings
+      // Load class -> creatorId mapping
       final classSnapshot =
           await FirebaseFirestore.instance.collection('classes').get();
       for (var doc in classSnapshot.docs) {
@@ -204,7 +220,6 @@ class LoginPage extends StatelessWidget {
       provider.setErrorMsg(e.message ?? "Google Sign-In error.");
     } catch (e) {
       EasyLoading.dismiss();
-      // print(e);
       provider
           .setErrorMsg("An unexpected error occurred during Google Sign-In.");
     }

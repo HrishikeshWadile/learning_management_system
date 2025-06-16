@@ -10,6 +10,7 @@ import 'package:learning_management_system/pages/settings_page.dart';
 import 'package:learning_management_system/pages/upload_tab.dart';
 import 'package:learning_management_system/pages/upload_videos_and_notes.dart';
 import 'package:learning_management_system/providers/app_data_provider.dart';
+import 'package:learning_management_system/services/firebase_options.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -17,7 +18,9 @@ import 'auth/login_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
   await Supabase.initialize(
     url: "https://wglilewconhadettbtfm.supabase.co",
     anonKey:

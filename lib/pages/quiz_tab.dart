@@ -32,7 +32,6 @@ class _QuizTabState extends State<QuizTab> {
         .collection('classes')
         .doc(widget.classId)
         .get();
-
     final data = doc.data();
     if (data != null && data['creator'] == currentUser.uid) {
       setState(() {
@@ -91,38 +90,70 @@ class _QuizTabState extends State<QuizTab> {
             child: ListView(
               children: quizSnapshot.data!.docs.map((quizDoc) {
                 final quizData = quizDoc.data() as Map<String, dynamic>;
-                return Card(
-                  elevation: 2.0,
-                  margin: const EdgeInsets.symmetric(vertical: 8.0),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors.grey[200],
-                      borderRadius: BorderRadius.circular(8.0),
-                    ),
-                    child: ListTile(
-                      title: Text(quizData['title'] ?? 'No Title'),
-                      subtitle: Text(quizData['description'] ?? ''),
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => QuizDetailPage(
-                              classId: widget.classId,
-                              quizId: quizDoc.id,
-                              quizTitle: quizData['title'] ?? 'Quiz',
-                              quizRef: quizDoc.reference,
-                            ),
+                final quizRef = quizDoc.reference;
+                final quizId = quizDoc.id;
+
+                return StreamBuilder<QuerySnapshot>(
+                  stream: quizRef
+                      .collection('submissions')
+                      .where('userId',
+                          isEqualTo: FirebaseAuth.instance.currentUser!.uid)
+                      .snapshots(),
+                  builder: (context, subSnap) {
+                    final bool withMarks = quizData['withMarks'] ?? true;
+                    int? totalScore;
+                    if (subSnap.hasData && subSnap.data!.docs.isNotEmpty) {
+                      final sub = subSnap.data!.docs.first.data()
+                          as Map<String, dynamic>;
+                      totalScore =
+                          (sub['autoScore'] ?? 0) + (sub['manualScore'] ?? 0);
+                    }
+
+                    return Card(
+                      elevation: 2.0,
+                      margin: const EdgeInsets.symmetric(vertical: 8.0),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.grey[200],
+                          borderRadius: BorderRadius.circular(8.0),
+                        ),
+                        child: ListTile(
+                          title: Text(quizData['title'] ?? 'No Title'),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(quizData['description'] ?? ''),
+                              if (totalScore != null && withMarks)
+                                Text('Your score: $totalScore',
+                                    style: const TextStyle(
+                                        color: Colors.green,
+                                        fontWeight: FontWeight.bold)),
+                            ],
                           ),
-                        );
-                      },
-                      trailing: _isCreator
-                          ? IconButton(
-                              icon: const Icon(Icons.delete, color: Colors.red),
-                              onPressed: () => _deleteQuiz(quizDoc.id),
-                            )
-                          : null,
-                    ),
-                  ),
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => QuizDetailPage(
+                                  classId: widget.classId,
+                                  quizId: quizId,
+                                  quizTitle: quizData['title'] ?? 'Quiz',
+                                  quizRef: quizRef,
+                                ),
+                              ),
+                            );
+                          },
+                          trailing: _isCreator
+                              ? IconButton(
+                                  icon: const Icon(Icons.delete,
+                                      color: Colors.red),
+                                  onPressed: () => _deleteQuiz(quizId),
+                                )
+                              : null,
+                        ),
+                      ),
+                    );
+                  },
                 );
               }).toList(),
             ),

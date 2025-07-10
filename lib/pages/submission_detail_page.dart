@@ -19,13 +19,6 @@ class SubmissionDetailPage extends StatefulWidget {
 
 class _SubmissionDetailPageState extends State<SubmissionDetailPage> {
   final Map<DocumentReference, TextEditingController> _markControllers = {};
-  bool _evaluated = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _evaluated = widget.submissionData['evaluated'] ?? false;
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -33,29 +26,48 @@ class _SubmissionDetailPageState extends State<SubmissionDetailPage> {
         List<Map<String, dynamic>>.from(widget.submissionData['answers'] ?? []);
     final userName = widget.submissionData['userName'] ?? 'Unknown';
     final userPhoto = widget.submissionData['userPhoto'] ?? '';
-    final autoScore = widget.submissionData['autoScore'] ?? 0;
-    final manualScore = widget.submissionData['manualScore'] ?? 0;
-    final total = autoScore + manualScore;
+    final totalScore = widget.submissionData['totalScore'] ?? 0;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('$userName\'s Submission'),
+        title: Text("$userName's Submission"),
         actions: [
-          if (!_evaluated)
-            IconButton(
-              icon: const Icon(Icons.check),
-              onPressed: () async {
-                await widget.submissionRef.update({
-                  'evaluated': true,
-                  'manualScore': _calculateManualScore(),
-                });
-                setState(() {
-                  _evaluated = true;
-                });
-                ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Submission evaluated!')));
-              },
-            ),
+          IconButton(
+            icon: const Icon(Icons.check),
+            onPressed: () async {
+              final updatedAnswers = answers.map((answer) {
+                final questionRef = answer['questionRef'] as DocumentReference;
+                final controller = _markControllers[questionRef];
+                final marks = int.tryParse(controller?.text ?? '0') ?? 0;
+                return {
+                  ...answer,
+                  'marks': marks,
+                };
+              }).toList();
+
+              final int totalMarks = updatedAnswers.fold<int>(
+                0,
+                (sum, a) => sum + ((a['marks'] ?? 0) as int),
+              );
+
+              await widget.submissionRef.update({
+                'answers': updatedAnswers,
+                'totalMarks': totalMarks,
+                'evaluated': true,
+              });
+
+              // Update local state to reflect changes immediately
+              setState(() {
+                widget.submissionData['answers'] = updatedAnswers;
+                widget.submissionData['totalMarks'] = totalMarks;
+                widget.submissionData['evaluated'] = true;
+              });
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Submission evaluated!')),
+              );
+            },
+          ),
         ],
       ),
       body: FutureBuilder<QuerySnapshot>(
@@ -84,11 +96,9 @@ class _SubmissionDetailPageState extends State<SubmissionDetailPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(userName, style: const TextStyle(fontSize: 18)),
-                        Text('Total Score: $total',
+                        Text('Total Score: $totalScore',
                             style: const TextStyle(
                                 fontSize: 16, fontWeight: FontWeight.bold)),
-                        Text('Auto Score: $autoScore'),
-                        Text('Manual Score: $manualScore'),
                       ],
                     ),
                   ],
@@ -109,15 +119,11 @@ class _SubmissionDetailPageState extends State<SubmissionDetailPage> {
                   final correctAnswer = questionData['correct_answer'];
                   final marks = questionData['marks'] ?? 1;
                   final userAnswer = answer['answer'];
-                  final isCorrect =
-                      _isAnswerCorrect(type, userAnswer, correctAnswer);
-                  final isAutoGraded = type != 'Long';
+                  final obtainedMarks = answer['marks'] ?? 0;
 
                   _markControllers.putIfAbsent(
                     questionRef,
-                    () => TextEditingController(
-                        text:
-                            isAutoGraded && isCorrect ? marks.toString() : '0'),
+                    () => TextEditingController(text: obtainedMarks.toString()),
                   );
 
                   return Card(
@@ -138,17 +144,15 @@ class _SubmissionDetailPageState extends State<SubmissionDetailPage> {
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 8, vertical: 4),
                                 decoration: BoxDecoration(
-                                  color: isAutoGraded && isCorrect
+                                  color: obtainedMarks == marks
                                       ? Colors.green.shade100
                                       : Colors.yellow.shade100,
                                   borderRadius: BorderRadius.circular(4),
                                 ),
                                 child: Text(
-                                  isAutoGraded && isCorrect
-                                      ? '$marks/$marks'
-                                      : '-/$marks',
+                                  '$obtainedMarks / $marks',
                                   style: TextStyle(
-                                    color: isAutoGraded && isCorrect
+                                    color: obtainedMarks == marks
                                         ? Colors.green.shade800
                                         : Colors.orange.shade800,
                                   ),
@@ -184,29 +188,16 @@ class _SubmissionDetailPageState extends State<SubmissionDetailPage> {
                           if (type == 'Numerical' || type == 'Long')
                             Text(userAnswer.toString()),
                           const SizedBox(height: 8),
-                          if (!isAutoGraded || !_evaluated) ...[
-                            const Text('Marks:',
-                                style: TextStyle(fontWeight: FontWeight.bold)),
-                            TextFormField(
-                              controller: _markControllers[questionRef],
-                              enabled: !_evaluated,
-                              keyboardType: TextInputType.number,
-                              decoration: InputDecoration(
-                                hintText: 'Enter marks (max $marks)',
-                                border: const OutlineInputBorder(),
-                              ),
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return 'Please enter marks';
-                                }
-                                final numValue = int.tryParse(value);
-                                if (numValue == null || numValue > marks) {
-                                  return 'Max $marks marks';
-                                }
-                                return null;
-                              },
+                          const Text('Marks:',
+                              style: TextStyle(fontWeight: FontWeight.bold)),
+                          TextFormField(
+                            controller: _markControllers[questionRef],
+                            keyboardType: TextInputType.number,
+                            decoration: InputDecoration(
+                              hintText: 'Enter marks (max $marks)',
+                              border: const OutlineInputBorder(),
                             ),
-                          ],
+                          ),
                         ],
                       ),
                     ),
@@ -218,38 +209,5 @@ class _SubmissionDetailPageState extends State<SubmissionDetailPage> {
         },
       ),
     );
-  }
-
-  bool _isAnswerCorrect(
-      String type, dynamic userAnswer, dynamic correctAnswer) {
-    if (type == 'MCQ') {
-      return userAnswer == correctAnswer;
-    } else if (type == 'MSQ') {
-      return userAnswer is List &&
-          correctAnswer is List &&
-          Set.from(userAnswer).containsAll(correctAnswer) &&
-          Set.from(correctAnswer).containsAll(userAnswer);
-    } else if (type == 'Short') {
-      return userAnswer.toString().trim().toLowerCase() ==
-          correctAnswer.toString().trim().toLowerCase();
-    } else if (type == 'Numerical') {
-      if (correctAnswer is num) {
-        return userAnswer == correctAnswer;
-      } else if (correctAnswer is Map) {
-        return userAnswer is num &&
-            userAnswer >= correctAnswer['min'] &&
-            userAnswer <= correctAnswer['max'];
-      }
-    }
-    return false;
-  }
-
-  int _calculateManualScore() {
-    int total = 0;
-    for (final controller in _markControllers.values) {
-      final marks = int.tryParse(controller.text) ?? 0;
-      total += marks;
-    }
-    return total;
   }
 }

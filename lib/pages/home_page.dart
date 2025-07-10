@@ -69,8 +69,9 @@ class HomePage extends StatelessWidget {
             itemCount: classes.length,
             itemBuilder: (context, index) {
               final classData = classes[index].data() as Map<String, dynamic>;
-              final creatorId =
-                  classData['userIDs'][0]; // First user is the creator
+              final classId = classes[index].id;
+              final creatorId = classData['userIDs'][0]; // First user = creator
+
               return FutureBuilder<DocumentSnapshot>(
                 future: FirebaseFirestore.instance
                     .collection('users')
@@ -78,49 +79,136 @@ class HomePage extends StatelessWidget {
                     .get(),
                 builder: (context, userSnapshot) {
                   if (userSnapshot.connectionState == ConnectionState.waiting) {
-                    return const ListTile(
-                      title: Text('Loading...'),
-                    );
+                    return const ListTile(title: Text('Loading...'));
                   }
 
                   if (userSnapshot.hasError) {
                     return ListTile(
-                      title: Text('Error: ${userSnapshot.error}'),
-                    );
+                        title: Text('Error: ${userSnapshot.error}'));
                   }
 
                   final userData =
                       userSnapshot.data?.data() as Map<String, dynamic>?;
                   final creatorName = userData?['name'] ?? 'Unknown';
                   final creatorPhoto = userData?['photoURL'];
-                  // SecureStorageService.saveClassDetails(classData['className'],
-                  //     creatorName, creatorPhoto, classes[index].id);
-                  return Card(
-                    margin: const EdgeInsets.all(8.0),
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        backgroundImage: creatorPhoto != null
-                            ? NetworkImage(creatorPhoto)
-                            : null,
-                        child: creatorPhoto == null
-                            ? const Icon(Icons.person)
-                            : null,
-                      ),
-                      title: Text(classData['className']),
-                      subtitle: Text('Created by: $creatorName'),
-                      onTap: () {
-                        context.push(ClassDetailPage.route, extra: {
-                          'className': classData['className'],
-                          'creatorName': creatorName,
-                          'creatorPhoto': creatorPhoto,
-                          'classId': classes[index].id,
-                        });
-                        // print(classData['className']);
-                        // print(creatorName);
-                        // print(creatorPhoto);
-                        // print(classes[index].id);
-                      },
-                    ),
+
+                  return StatefulBuilder(
+                    builder: (context, setTileState) {
+                      return Card(
+                        margin: const EdgeInsets.all(8.0),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundImage: creatorPhoto != null
+                                ? NetworkImage(creatorPhoto)
+                                : null,
+                            child: creatorPhoto == null
+                                ? const Icon(Icons.person)
+                                : null,
+                          ),
+                          title: Text(classData['className']),
+                          subtitle: Text('Created by: $creatorName'),
+                          onTap: () {
+                            context.push(ClassDetailPage.route, extra: {
+                              'className': classData['className'],
+                              'creatorName': creatorName,
+                              'creatorPhoto': creatorPhoto,
+                              'classId': classId,
+                            });
+                          },
+                          trailing: PopupMenuButton<String>(
+                            onSelected: (value) async {
+                              if (value == 'edit') {
+                                final controller = TextEditingController(
+                                    text: classData['className']);
+                                final result = await showDialog<String>(
+                                  context: context,
+                                  builder: (context) => AlertDialog(
+                                    title: const Text('Edit Class Title'),
+                                    content: TextField(
+                                      controller: controller,
+                                      decoration: const InputDecoration(
+                                          labelText: 'Class Name'),
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(context),
+                                        child: const Text('Cancel'),
+                                      ),
+                                      ElevatedButton(
+                                        onPressed: () {
+                                          final newName =
+                                              controller.text.trim();
+                                          if (newName.isNotEmpty) {
+                                            Navigator.pop(context, newName);
+                                          }
+                                        },
+                                        child: const Text('Save'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+
+                                if (result != null && result.isNotEmpty) {
+                                  await FirebaseFirestore.instance
+                                      .collection('classes')
+                                      .doc(classId)
+                                      .update({'className': result});
+                                  setTileState(() {
+                                    classData['className'] = result;
+                                  });
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                        content: Text('Class name updated')),
+                                  );
+                                }
+                              } else if (value == 'delete') {
+                                final confirm = await showDialog<bool>(
+                                  context: context,
+                                  builder: (context) => AlertDialog(
+                                    title: const Text('Confirm Deletion'),
+                                    content: const Text(
+                                        'Are you sure you want to delete this class?'),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(context, false),
+                                        child: const Text('Cancel'),
+                                      ),
+                                      ElevatedButton(
+                                        style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.red),
+                                        onPressed: () =>
+                                            Navigator.pop(context, true),
+                                        child: const Text('Delete'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+
+                                if (confirm == true) {
+                                  await FirebaseFirestore.instance
+                                      .collection('classes')
+                                      .doc(classId)
+                                      .delete();
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                        content:
+                                            Text('Class deleted successfully')),
+                                  );
+                                }
+                              }
+                            },
+                            itemBuilder: (context) => const [
+                              PopupMenuItem(
+                                  value: 'edit',
+                                  child: Text('Edit Class Title')),
+                              PopupMenuItem(
+                                  value: 'delete', child: Text('Delete Class')),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
                   );
                 },
               );
@@ -129,9 +217,7 @@ class HomePage extends StatelessWidget {
         },
       ),
       floatingActionButton: FloatingActionButton(
-        // foregroundColor: Colors.white,
         onPressed: () => context.push(UploadTab.route),
-        // backgroundColor: Colors.orange,
         child: const Icon(Icons.add),
       ),
     );

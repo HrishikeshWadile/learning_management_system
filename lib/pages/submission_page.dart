@@ -26,9 +26,9 @@ class SubmissionPage extends StatelessWidget {
               final userName = submission['userName'] ?? 'Unknown';
               final userPhoto = submission['userPhoto'] ?? '';
               final autoScore = submission['autoScore'] ?? 0;
-              final manualScore = submission['manualScore'] ?? 0;
+              final totalScore = submission['totalScore'] ?? 0;
               final evaluated = submission['evaluated'] ?? false;
-              final total = autoScore + manualScore;
+              final total = totalScore != 0 ? totalScore : autoScore;
               final timestamp = submission['submittedAt'] as Timestamp?;
               final dateTime = timestamp?.toDate();
 

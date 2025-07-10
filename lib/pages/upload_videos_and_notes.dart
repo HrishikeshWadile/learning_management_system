@@ -122,9 +122,9 @@ class _UploadVideosAndNotesState extends State<UploadVideosAndNotes> {
   Future<void> uploadNoteAndSaveLink() async {
     final supabase = Supabase.instance.client;
 
-    if (_file == null || _titleController.text.isEmpty) {
+    if (_selectedOption == null || _titleController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please select a file and enter title")),
+        const SnackBar(content: Text("Please select a type and enter title")),
       );
       return;
     }
@@ -137,27 +137,39 @@ class _UploadVideosAndNotesState extends State<UploadVideosAndNotes> {
           );
           return;
         }
+
         await dbHelper.saveVideo(
           classId: widget.classId,
           title: _titleController.text,
           description: _descriptionController.text,
           youtubeLink: _youtubeLinkController.text,
         );
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Video uploaded successfully!")),
+        );
+        Navigator.pop(context);
       } else if (_selectedOption == 'Notes') {
-        // Unique path using classId and file name
+        if (_file == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Please select a file")),
+          );
+          return;
+        }
+
         final fileName = path.basename(_file!.path);
         final storagePath = '${widget.classId}/$fileName';
 
-        // Upload to Supabase
         final fileBytes = await _file!.readAsBytes();
         await supabase.storage.from('notes').uploadBinary(
-            storagePath, fileBytes,
-            fileOptions: const FileOptions(cacheControl: '3600'));
+              storagePath,
+              fileBytes,
+              fileOptions: const FileOptions(cacheControl: '3600'),
+            );
 
-        // Get public URL
         final publicUrl =
             supabase.storage.from('notes').getPublicUrl(storagePath);
-        // Save metadata to Firebase
+
         await dbHelper.saveNotes(
           classId: widget.classId,
           title: _titleController.text,
@@ -173,17 +185,19 @@ class _UploadVideosAndNotesState extends State<UploadVideosAndNotes> {
         _file = null;
         _titleController.clear();
         _descriptionController.clear();
+        _youtubeLinkController.clear();
         setState(() {});
+        Navigator.pop(context);
       }
     } catch (e) {
-      // print(e);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("Error: $e")),
       );
+      print(e);
     }
   }
 
-  // Future<void> _uploadFile() async {
+// Future<void> _uploadFile() async {
   //   if (_titleController.text.isEmpty) {
   //     ScaffoldMessenger.of(context).showSnackBar(
   //       const SnackBar(content: Text('Please enter a title')),

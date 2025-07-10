@@ -39,7 +39,9 @@ class _ClassDetailPageState extends State<ClassDetailPage> {
     _widgetOptions = <Widget>[
       VideosAndNotesTab(classId: widget.classID), // Pass classId here
       QuizTab(classId: widget.classID),
-      ChatTab(),
+      ChatTab(
+        classId: widget.classID,
+      ),
     ];
   }
 

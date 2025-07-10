@@ -1,7 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:learning_management_system/pages/quiz_submission_page.dart';
 import 'package:learning_management_system/pages/submission_page.dart';
 
 class QuizDetailPage extends StatefulWidget {
@@ -28,13 +27,15 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
   int _totalMarks = 0;
   bool _shuffle = false;
   bool _withMarks = true;
+  bool _alreadySubmitted = false;
+  bool _isEvaluated = false; // Add this line
 
   TextEditingController? _titleController;
   TextEditingController? _descriptionController;
   final Map<DocumentReference, TextEditingController> _questionControllers = {};
   final Map<DocumentReference, TextEditingController> _answerControllers = {};
   final Map<String, FocusNode> _answerFocusNodes = {}; // Changed key to String
-  final Map<DocumentReference, dynamic> _studentAnswers = {};
+  final Map<DocumentReference, Map<String, dynamic>> _studentAnswers = {};
 
   @override
   void initState() {
@@ -42,9 +43,40 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
     _initPage();
   }
 
+  void autoSubmitQuiz(Map<String, dynamic> quizData) async {
+    if (_alreadySubmitted) return; // ⛔️ Prevent resubmitting
+
+    bool scheduledEnable = quizData['scheduledVisibility'];
+    DateTime? end = (quizData['endTime'] as Timestamp?)?.toDate();
+
+    if (!scheduledEnable || end == null) return;
+
+    DateTime? serverTime = await getServerTime();
+    if (serverTime == null) return;
+
+    if (serverTime.isAfter(end)) {
+      await _finalizeSubmission();
+    }
+  }
+
+  Future<DateTime?> getServerTime() async {
+    final dummyDoc =
+        FirebaseFirestore.instance.collection('serverTime').doc('now');
+    await dummyDoc.set(
+        {'timestamp': FieldValue.serverTimestamp()}, SetOptions(merge: true));
+
+    final snapshot = await dummyDoc.get();
+    final timestamp = snapshot['timestamp'];
+
+    if (timestamp is Timestamp) {
+      return timestamp.toDate();
+    }
+    return null;
+  }
+
   // Helper to get DocumentReference from String ID for student answers
-  DocumentReference _getQuestionRefById(String id) =>
-      widget.quizRef.collection('questions').doc(id);
+  // DocumentReference _getQuestionRefById(String id) =>
+  //     widget.quizRef.collection('questions').doc(id);
 
   Future<void> _initPage() async {
     final currentUser = FirebaseAuth.instance.currentUser;
@@ -65,6 +97,9 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
       _withMarks = quizData?['withMarks'] ?? true;
       _isLoading = false;
     });
+    if (quizData != null && !_isCreator) {
+      autoSubmitQuiz(quizData);
+    }
     if (_withMarks) {
       _calculateTotalMarks();
     }
@@ -85,28 +120,138 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
     });
   }
 
-  void _loadStudentAnswers() async {
+  Future<void> _loadStudentAnswers() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final doc = await FirebaseFirestore.instance
-        .collection('classes')
-        .doc(widget.classId)
-        .collection('quizzes')
-        .doc(widget.quizId)
-        .collection('submissions')
-        .doc(user.uid)
-        .get();
+    final doc =
+        await widget.quizRef.collection('submissions').doc(user.uid).get();
 
     if (doc.exists) {
       final data = doc.data();
-      final answers = data?['answers'] as Map<String, dynamic>? ?? {};
-      setState(() {
-        for (var entry in answers.entries) {
-          _studentAnswers[_getQuestionRefById(entry.key)] = entry.value;
+      final answersList = data?['answers'] as List<dynamic>? ?? [];
+      final Map<DocumentReference, Map<String, dynamic>> loadedAnswers = {};
+
+      for (final item in answersList) {
+        // print("Processing item: $item"); // Debug print
+        if (item is Map<String, dynamic>) {
+          final questionRef = item['questionRef'] as DocumentReference?;
+          if (questionRef != null) {
+            // Try to get marks for each question if available
+            final dynamic marksData = item['marks'];
+            // print("Marks data from submission: $marksData for question ${item['questionRef']?.id}"); // Debug print
+            int? obtainedMarks;
+            if (marksData is int) {
+              obtainedMarks = marksData;
+            } else if (marksData is String) {
+              obtainedMarks = int.tryParse(marksData);
+            } else if (marksData is num) {
+              obtainedMarks = marksData.toInt();
+            }
+
+            loadedAnswers[questionRef] = {
+              'answer': item['answer'],
+              if (obtainedMarks != null) 'marksObtained': obtainedMarks,
+            };
+
+            // final DocumentReference questionRef = item['questionRef'];
+            // final dynamic answer = item['answer'];
+            // _studentAnswers[questionRef] = answer;
+          }
         }
+      }
+
+      setState(() {
+        _studentAnswers.addAll(loadedAnswers);
+        _alreadySubmitted = data?['submittedAt'] != null;
+        _isEvaluated = data?['evaluated'] ?? false;
       });
     }
+  }
+
+  Future<void> _finalizeSubmission() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final submissionRef = FirebaseFirestore.instance
+        .collection('classes')
+        .doc(widget.classId)
+        .collection('quizes')
+        .doc(widget.quizId)
+        .collection('submissions')
+        .doc(user.uid);
+
+    final questionsSnapshot =
+        await widget.quizRef.collection('questions').get();
+
+    int autoScore = 0;
+    List<Map<String, dynamic>> answersList = [];
+
+    for (final qDoc in questionsSnapshot.docs) {
+      final data = qDoc.data();
+      final type = data['type'];
+      final correctAnswer = data['correct_answer'];
+      final questionRef = qDoc.reference;
+      final marks = (data['marks'] ?? 1);
+      final int intMarks = (marks is int) ? marks : (marks as num).toInt();
+
+      final userAnswer = _studentAnswers[questionRef]?['answer'];
+      int? marksObtained;
+
+      if (userAnswer != null) {
+        if (type == 'MCQ' || type == 'Short') {
+          if (userAnswer.toString().trim().toLowerCase() ==
+              correctAnswer.toString().trim().toLowerCase()) {
+            marksObtained = intMarks;
+            autoScore += intMarks;
+          }
+        } else if (type == 'MSQ') {
+          final userList = userAnswer as List<dynamic>;
+          final correctList = List<String>.from(correctAnswer ?? []);
+          if (Set.from(userList).containsAll(correctList) &&
+              Set.from(correctList).containsAll(userList)) {
+            marksObtained = intMarks;
+            autoScore += intMarks;
+          }
+        } else if (type == 'Numerical') {
+          try {
+            final double userVal = double.parse(userAnswer.toString());
+            if (correctAnswer is num) {
+              if (userVal == correctAnswer) {
+                marksObtained = intMarks;
+                autoScore += intMarks;
+              }
+            } else if (correctAnswer is Map) {
+              final min = correctAnswer['min'];
+              final max = correctAnswer['max'];
+              if (userVal >= min && userVal <= max) {
+                marksObtained = intMarks;
+                autoScore += intMarks;
+              }
+            }
+          } catch (_) {}
+        }
+      }
+      // Long answers are evaluated manually, so not scored here
+
+      answersList.add({
+        // 'totalMarksRef':
+        'questionRef': questionRef,
+        'answer': userAnswer,
+        'marks': marksObtained,
+      });
+    }
+
+    await submissionRef.set({
+      'evaluated': false,
+      'submittedAt': Timestamp.now(),
+      'answers': answersList,
+      'autoScore': autoScore,
+    }, SetOptions(merge: true));
+
+    setState(() {
+      _alreadySubmitted = true;
+    });
   }
 
   Future<void> _saveStudentAnswerToFirebase(
@@ -117,18 +262,52 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
     final submissionRef = FirebaseFirestore.instance
         .collection('classes')
         .doc(widget.classId)
-        .collection('quizzes')
+        .collection('quizes')
         .doc(widget.quizId)
         .collection('submissions')
         .doc(user.uid); // One submission per user
 
+    final existingSnapshot = await submissionRef.get();
+    final existingData = existingSnapshot.data();
+    List<Map<String, dynamic>> answers = [];
+
+    if (existingData != null && existingData['answers'] is List) {
+      answers = List<Map<String, dynamic>>.from(existingData['answers']);
+    }
+
+    // Check if this question already exists
+    bool updated = false;
+    for (var ans in answers) {
+      if ((ans['questionRef'] as DocumentReference).id == questionId) {
+        ans['answer'] = answer;
+        updated = true;
+        break;
+      }
+    }
+
+    if (!updated) {
+      final questionRef = FirebaseFirestore.instance
+          .collection('classes')
+          .doc(widget.classId)
+          .collection('quizes')
+          .doc(widget.quizId)
+          .collection('questions')
+          .doc(questionId);
+
+      answers.add({
+        'questionRef': questionRef,
+        'answer': answer,
+      });
+    }
+
     await submissionRef.set({
       'userId': user.uid,
+      'userPhoto': user.photoURL,
       'userName': user.displayName,
       'userEmail': user.email,
-      'answers': {questionId: answer},
-      'submittedAt': null, // Or Timestamp.now() if already submitted
-    }, SetOptions(merge: true)); // Merge allows updating just one answer
+      'answers': answers,
+      // 'submittedAt': Timestamp.now(),
+    }, SetOptions(merge: true));
   }
 
   @override
@@ -202,8 +381,27 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_titleController?.text ?? widget.quizTitle),
+        title: Flexible(
+          child: Text(
+            _titleController?.text ?? widget.quizTitle,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
         actions: [
+          // In the appBar's actions, add this before the marks display:
+          if (!_isCreator && _alreadySubmitted)
+            Container(
+              margin: const EdgeInsets.only(right: 12, top: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.green,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Text(
+                "Submitted",
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
           if (_withMarks)
             Container(
               margin: const EdgeInsets.only(right: 12, top: 12),
@@ -213,7 +411,7 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Text(
-                "Marks: $_totalMarks",
+                "Total Marks: $_totalMarks",
                 style: const TextStyle(color: Colors.white),
               ),
             ),
@@ -375,8 +573,47 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
                                 ),
                               )
                             ] else ...[
-                              Text("Q: ${data['question'] ?? ''}",
-                                  style: const TextStyle(fontSize: 16)),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Text("Q: ${data['question'] ?? ''}",
+                                        style: const TextStyle(fontSize: 16)),
+                                  ),
+                                  if (_withMarks)
+                                    Builder(builder: (context) {
+                                      final marksObtained =
+                                          _studentAnswers[doc.reference]
+                                              ?['marksObtained'];
+
+                                      final bool evaluated =
+                                          _isEvaluated; // Use the loaded status
+
+                                      final totalMarks = data['marks'] ?? 0;
+                                      final marksObtainedStr =
+                                          marksObtained ?? '-';
+                                      return _alreadySubmitted
+                                          ? Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 8,
+                                                      vertical: 4),
+                                              decoration: BoxDecoration(
+                                                color: evaluated
+                                                    ? Colors.green
+                                                    : Colors.yellow,
+                                                borderRadius:
+                                                    BorderRadius.circular(4),
+                                              ),
+                                              child: Text(
+                                                "$marksObtainedStr/$totalMarks",
+                                              ),
+                                            )
+                                          : Text(" ($totalMarks)");
+                                    }),
+                                ],
+                              ),
                               const SizedBox(height: 4),
                               Text("Type: ${data['type'] ?? ''}",
                                   style: const TextStyle(color: Colors.grey)),
@@ -396,47 +633,53 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
           if (!_isCreator)
             Padding(
               padding: const EdgeInsets.all(16.0),
-              child: ElevatedButton(
-                style: ButtonStyle(
-                  backgroundColor: WidgetStateProperty.all(Colors.green),
-                  foregroundColor: WidgetStateProperty.all(Colors.white),
-                ),
-                onPressed: () async {
-                  bool confirm = await showDialog(
-                    context: context,
-                    builder: (context) => AlertDialog(
-                      title: const Text("Confirm Submission"),
-                      content: const Text(
-                          "Are you sure you want to submit your answers? You won't be able to edit them after submission."),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, false),
-                          child: const Text("Cancel"),
-                        ),
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, true),
-                          child: const Text("Submit"),
-                        ),
-                      ],
-                    ),
-                  );
-
-                  if (confirm == true) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => QuizSubmissionPage(
-                          quizRef: widget.quizRef,
-                        ),
+              child: _alreadySubmitted
+                  ? ElevatedButton(
+                      style: ButtonStyle(
+                        backgroundColor: WidgetStateProperty.all(Colors.grey),
                       ),
-                    );
-                  }
-                },
-                child: const Text(
-                  "Submit Quiz",
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
+                      onPressed: null,
+                      child: const Text("Already Submitted"),
+                    )
+                  : ElevatedButton(
+                      style: ButtonStyle(
+                        backgroundColor: WidgetStateProperty.all(
+                            Theme.of(context).primaryColor),
+                        foregroundColor: WidgetStateProperty.all(Colors.white),
+                      ),
+                      onPressed: () async {
+                        bool confirm = await showDialog(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: const Text("Confirm Submission"),
+                            content: const Text(
+                                "Are you sure you want to submit your answers? You won't be able to edit them after submission."),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context, false),
+                                child: const Text("Cancel"),
+                              ),
+                              TextButton(
+                                onPressed: () => Navigator.pop(context, true),
+                                child: const Text("Submit"),
+                              ),
+                            ],
+                          ),
+                        );
+
+                        if (confirm == true) {
+                          await _finalizeSubmission();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content: Text('Quiz submitted successfully!')),
+                          );
+                        }
+                      },
+                      child: const Text(
+                        "Submit Quiz",
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ),
             ),
         ],
       ),
@@ -641,95 +884,171 @@ class _QuizDetailPageState extends State<QuizDetailPage> {
       //   () => TextEditingController(
       //       text: _studentAnswers[docRef]?.toString() ?? ''),
       // );
+      if (_alreadySubmitted) {
+        final currentAnswer = _studentAnswers[docRef]?['answer'];
+        final controller =
+            TextEditingController(text: currentAnswer?.toString() ?? '');
+        if (type == 'MCQ') {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: options.map((opt) {
+              return ListTile(
+                title: Text(opt),
+                leading: Radio<String>(
+                  value: opt,
+                  groupValue: currentAnswer,
+                  onChanged: null, // Disabled
+                ),
+              );
+            }).toList(),
+          );
+        } else if (type == 'MSQ') {
+          List<String> selected = _studentAnswers[docRef]?['answer'] is List
+              ? List<String>.from(_studentAnswers[docRef]?['answer'])
+              : [];
 
-      TextEditingController controller;
-      if (_answerControllers.containsKey(docRef)) {
-        controller = _answerControllers[docRef]!;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: options.map((opt) {
+              return CheckboxListTile(
+                title: Text(opt),
+                value: selected.contains(opt),
+                onChanged: null,
+              );
+            }).toList(),
+          );
+        } else if (type == 'Numerical') {
+          return TextFormField(
+            controller: controller,
+            readOnly: true,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: "Your Answer"),
+          );
+        } else if (type == 'Short') {
+          return TextFormField(
+            controller: controller,
+            readOnly: true,
+            decoration: const InputDecoration(labelText: "Your Answer"),
+          );
+        } else if (type == 'Long') {
+          return TextFormField(
+            controller: controller,
+            readOnly: true,
+            maxLines: 5,
+            decoration: const InputDecoration(labelText: "Your Answer"),
+          );
+        }
+
+        // Similar read-only views for other question types...
       } else {
-        final answer = _studentAnswers[docRef.id]?.toString() ?? '';
-        controller = TextEditingController(text: answer);
-        _answerControllers[docRef] = controller;
-      }
+        TextEditingController controller;
+        if (_answerControllers.containsKey(docRef)) {
+          controller = _answerControllers[docRef]!;
+        } else {
+          final answer = _studentAnswers[docRef]?['answer']?.toString() ?? '';
+          controller = TextEditingController(text: answer);
+          _answerControllers[docRef] = controller;
+        }
 
-      FocusNode focusNode;
-      if (_answerFocusNodes.containsKey(docRef.id)) {
-        focusNode = _answerFocusNodes[docRef.id]!;
-      } else {
-        focusNode = FocusNode();
-        focusNode.addListener(() {
-          if (!focusNode.hasFocus) {
-            final val = controller.text.trim();
-            _studentAnswers[docRef] = val;
-            _saveStudentAnswerToFirebase(docRef.id, val); // Save with String ID
-          }
-        });
-        _answerFocusNodes[docRef.id] = focusNode; // Use String ID as key
-      }
+        FocusNode focusNode;
+        if (_answerFocusNodes.containsKey(docRef.id)) {
+          focusNode = _answerFocusNodes[docRef.id]!;
+        } else {
+          focusNode = FocusNode();
+          focusNode.addListener(() {
+            if (!focusNode.hasFocus) {
+              dynamic val = controller.text.trim();
+              if (type == 'MSQ') {
+                // MSQ answers are lists
+                // Assuming MSQ answers are stored as List<String> in _studentAnswers
+                // For MSQ, the `controller.text` is not directly used for the answer value.
+                // The answer is managed through the `selected` list in the MSQ widget.
+                // We just need to trigger the save.
+              } else {
+                _studentAnswers.putIfAbsent(docRef, () => {})['answer'] = val;
+              }
+              _saveStudentAnswerToFirebase(
+                  docRef.id, val); // Save with String ID
+            }
+          });
+          _answerFocusNodes[docRef.id] = focusNode; // Use String ID as key
+        }
 
-      if (type == 'MCQ') {
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: options.map((opt) {
-            final currentAnswer = _studentAnswers[docRef] as String?;
-            return RadioListTile<String>(
-              title: Text(opt),
-              value: opt,
-              groupValue: currentAnswer,
-              onChanged: (val) {
-                if (val != null) {
-                  _studentAnswers[docRef] = val;
-                  _saveStudentAnswerToFirebase(docRef.id, val);
-                }
-              },
-            );
-          }).toList(),
-        );
-      } else if (type == 'MSQ') {
-        List<String> selected = _studentAnswers[docRef] is List
-            ? List<String>.from(_studentAnswers[docRef])
-            : [];
+        if (type == 'MCQ') {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: options.map((opt) {
+              final currentAnswer =
+                  _studentAnswers[docRef]?['answer'] as String?;
+              return RadioListTile<String>(
+                title: Text(opt),
+                value: opt,
+                groupValue: currentAnswer,
+                onChanged: (val) {
+                  if (val != null) {
+                    // Ensure _studentAnswers[docRef] is initialized if null
+                    _studentAnswers.putIfAbsent(docRef, () => {});
+                    setState(() {
+                      _studentAnswers[docRef]?['answer'] = val;
+                    });
+                    _saveStudentAnswerToFirebase(
+                        docRef.id, val); // Save with String ID
+                  }
+                },
+              );
+            }).toList(),
+          );
+        } else if (type == 'MSQ') {
+          List<String> selected = _studentAnswers[docRef]?['answer'] is List
+              ? List<String>.from(_studentAnswers[docRef]!['answer'])
+              : [];
 
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: options.map((opt) {
-            return CheckboxListTile(
-              title: Text(opt),
-              value: selected.contains(opt),
-              onChanged: (val) {
-                if (val == true) {
-                  selected.add(opt);
-                } else {
-                  selected.remove(opt);
-                }
-                _studentAnswers[docRef] = selected;
-                _saveStudentAnswerToFirebase(docRef.id, selected);
-              },
-            );
-          }).toList(),
-        );
-      } else if (type == 'Numerical') {
-        return TextFormField(
-          controller: controller,
-          focusNode: focusNode,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(labelText: "Your Answer"),
-        );
-      } else if (type == 'Short') {
-        return TextFormField(
-          controller: controller,
-          focusNode: focusNode,
-          decoration: const InputDecoration(labelText: "Your Answer"),
-        );
-      } else if (type == 'Long') {
-        return TextFormField(
-          controller: controller,
-          focusNode: focusNode,
-          maxLines: 5,
-          decoration: const InputDecoration(labelText: "Your Answer"),
-        );
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: options.map((opt) {
+              return CheckboxListTile(
+                title: Text(opt),
+                value: selected.contains(opt),
+                onChanged: (val) {
+                  if (val == true) {
+                    selected.add(opt);
+                  } else {
+                    selected.remove(opt);
+                  }
+                  // Ensure _studentAnswers[docRef] is initialized if null
+                  _studentAnswers.putIfAbsent(docRef, () => {});
+                  setState(() {
+                    _studentAnswers[docRef]?['answer'] = selected;
+                  });
+                  _saveStudentAnswerToFirebase(
+                      docRef.id, selected); // Save with String ID
+                },
+              );
+            }).toList(),
+          );
+        } else if (type == 'Numerical') {
+          return TextFormField(
+            controller: controller,
+            focusNode: focusNode,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: "Your Answer"),
+          );
+        } else if (type == 'Short') {
+          return TextFormField(
+            controller: controller,
+            focusNode: focusNode,
+            decoration: const InputDecoration(labelText: "Your Answer"),
+          );
+        } else if (type == 'Long') {
+          return TextFormField(
+            controller: controller,
+            focusNode: focusNode,
+            maxLines: 5,
+            decoration: const InputDecoration(labelText: "Your Answer"),
+          );
+        }
       }
     }
-
     return const SizedBox();
   }
 }

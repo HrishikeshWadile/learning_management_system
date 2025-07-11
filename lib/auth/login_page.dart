@@ -161,48 +161,66 @@ class LoginPage extends StatelessWidget {
   Future<void> _signInWithGoogle(
       BuildContext context, AppDataProvider provider) async {
     EasyLoading.show(status: "Please Wait");
+
     try {
       UserCredential userCredential;
-      final googleSignIn = GoogleSignIn();
-      await googleSignIn.signOut(); // 🔑 Force sign-out to show account picker
+
       if (kIsWeb ||
           Platform.isWindows ||
           Platform.isLinux ||
           Platform.isMacOS) {
-        // ✅ Web & Desktop (Popup sign-in)
-        GoogleAuthProvider authProvider = GoogleAuthProvider();
+        GoogleAuthProvider googleProvider = GoogleAuthProvider();
+
+        googleProvider
+            .addScope('https://www.googleapis.com/auth/contacts.readonly');
+        googleProvider.setCustomParameters({'login_hint': 'user@example.com'});
+
+        // Once signed in, return the UserCredential
         userCredential =
-            await FirebaseAuth.instance.signInWithPopup(authProvider);
+            await FirebaseAuth.instance.signInWithPopup(googleProvider);
       } else {
-        // ✅ Android / iOS
-        final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
+        // ✅ Android/iOS – use authenticate()
+        await GoogleSignIn.instance.initialize();
+
+        final GoogleSignInAccount? googleUser =
+            await GoogleSignIn.instance.authenticate();
+
         if (googleUser == null) {
-          EasyLoading.dismiss();
-          return;
+          throw FirebaseAuthException(
+            message: "Google Sign-In was cancelled or failed.",
+            code: "google_sign_in_cancelled",
+          );
         }
 
         final GoogleSignInAuthentication googleAuth =
             await googleUser.authentication;
 
-        final credential = GoogleAuthProvider.credential(
-          accessToken: googleAuth.accessToken,
-          idToken: googleAuth.idToken,
-        );
+        if (googleAuth.idToken == null) {
+          throw FirebaseAuthException(
+            message: "Missing Google ID token.",
+            code: "missing_id_token",
+          );
+        }
+
+        final credential =
+            GoogleAuthProvider.credential(idToken: googleAuth.idToken);
 
         userCredential =
             await FirebaseAuth.instance.signInWithCredential(credential);
       }
 
+      // ✅ Post login: Firebase user logic
       final User? user = userCredential.user;
       if (user == null) {
         throw FirebaseAuthException(
-            message: "Google Sign-In Failed", code: "google_sign_in_failed");
+          message: "Google Sign-In failed.",
+          code: "google_sign_in_failed",
+        );
       }
 
       await _storeUserData(user);
       provider.setUserId(user.uid);
 
-      // Load class -> creatorId mapping
       final classSnapshot =
           await FirebaseFirestore.instance.collection('classes').get();
       for (var doc in classSnapshot.docs) {
@@ -217,11 +235,11 @@ class LoginPage extends StatelessWidget {
       context.go(HomePage.route);
     } on FirebaseAuthException catch (e) {
       EasyLoading.dismiss();
-      provider.setErrorMsg(e.message ?? "Google Sign-In error.");
-    } catch (e) {
+      provider.setErrorMsg(e.message ?? "Firebase Auth error.");
+    } catch (e, st) {
       EasyLoading.dismiss();
-      provider
-          .setErrorMsg("An unexpected error occurred during Google Sign-In.");
+      debugPrint("Sign-In Error: $e\n$st");
+      provider.setErrorMsg("Unexpected error during Google Sign-In.");
     }
   }
 

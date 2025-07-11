@@ -193,58 +193,6 @@ class _UploadVideosAndNotesState extends State<UploadVideosAndNotes> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("Error: $e")),
       );
-      print(e);
     }
   }
-
-// Future<void> _uploadFile() async {
-  //   if (_titleController.text.isEmpty) {
-  //     ScaffoldMessenger.of(context).showSnackBar(
-  //       const SnackBar(content: Text('Please enter a title')),
-  //     );
-  //     return;
-  //   }
-  //
-  //   try {
-  //     if (_selectedOption == 'Video') {
-  //       if (_youtubeLinkController.text.isEmpty) {
-  //         ScaffoldMessenger.of(context).showSnackBar(
-  //           const SnackBar(content: Text('Please enter a YouTube link')),
-  //         );
-  //         return;
-  //       }
-  //       await dbHelper.saveVideo(
-  //         classId: widget.classId,
-  //         title: _titleController.text,
-  //         description: _descriptionController.text,
-  //         youtubeLink: _youtubeLinkController.text,
-  //       );
-  //     } else if (_selectedOption == 'Notes') {
-  //       if (_file == null) {
-  //         ScaffoldMessenger.of(context).showSnackBar(
-  //           const SnackBar(content: Text('Please select a file')),
-  //         );
-  //         return;
-  //       }
-  //       final fileUrl = await dbHelper.uploadFile(_file!);
-  //       await dbHelper.saveNotes(
-  //         classId: widget.classId,
-  //         title: _titleController.text,
-  //         description: _descriptionController.text,
-  //         fileUrl: fileUrl,
-  //       );
-  //     }
-  //
-  //     ScaffoldMessenger.of(context).showSnackBar(
-  //       const SnackBar(content: Text('Upload successful!')),
-  //     );
-  //
-  //     await Future.delayed(const Duration(seconds: 1));
-  //     if (mounted) Navigator.pop(context);
-  //   } catch (e) {
-  //     ScaffoldMessenger.of(context).showSnackBar(
-  //       SnackBar(content: Text('Error: $e')),
-  //     );
-  //   }
-  // }
 }

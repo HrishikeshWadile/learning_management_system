@@ -43,6 +43,7 @@ class DBHelper {
     required String title,
     required String description,
     required String fileUrl,
+    required String fileId,
   }) async {
     await _firestore
         .collection('classes')
@@ -53,6 +54,7 @@ class DBHelper {
       'description': description,
       'type': 'notes',
       'fileUrl': fileUrl,
+      'fileId': fileId,
       'timestamp': DateTime.now(),
     });
   }

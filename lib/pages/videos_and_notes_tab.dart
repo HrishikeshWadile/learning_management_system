@@ -2,8 +2,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:learning_management_system/pages/upload_videos_and_notes.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 
 import '../file_viewers/image_preview_screen.dart';
@@ -22,33 +24,92 @@ class VideosAndNotesTab extends StatefulWidget {
 class _VideosAndNotesTabState extends State<VideosAndNotesTab> {
   bool _isCreator = false;
   bool _isLoading = true;
+  bool _isDriveAccessGranted = false;
+  DateTime? _lastDriveCheck;
 
   @override
   void initState() {
     super.initState();
     _checkIfUserIsCreator();
+    _loadDriveAccessStatus();
+  }
+
+  Future<void> _loadDriveAccessStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    final granted = prefs.getBool('driveAccessGranted') ?? false;
+    final lastCheckedMillis = prefs.getInt('driveLastChecked');
+
+    if (lastCheckedMillis != null) {
+      _lastDriveCheck = DateTime.fromMillisecondsSinceEpoch(lastCheckedMillis);
+    }
+
+    final now = DateTime.now();
+    final needsCheck = _lastDriveCheck == null ||
+        now.difference(_lastDriveCheck!).inHours >= 12;
+
+    if (granted && !needsCheck) {
+      setState(() {
+        _isDriveAccessGranted = true;
+      });
+    } else {
+      await _verifyDriveAccess();
+    }
+  }
+
+  Future<void> _verifyDriveAccess() async {
+    try {
+      final uri = Uri.parse(
+        'https://script.google.com/macros/s/AKfycbzu_cXXurvxvXsXKUex52xWc4OmbDf1Rd5tEUSYJSUNyHxUeazmjwl3G0dXaxmWRczKlQ/exec?action=verify',
+      );
+
+      final response = await http.get(uri);
+      final prefs = await SharedPreferences.getInstance();
+
+      if (response.statusCode == 200) {
+        setState(() {
+          _isDriveAccessGranted = true;
+        });
+        await prefs.setBool('driveAccessGranted', true);
+      } else {
+        setState(() {
+          _isDriveAccessGranted = false;
+        });
+        await prefs.setBool('driveAccessGranted', false);
+      }
+
+      await prefs.setInt(
+          'driveLastChecked', DateTime.now().millisecondsSinceEpoch);
+    } catch (e) {
+      debugPrint("Drive access verify failed: $e");
+    }
   }
 
   Future<void> _checkIfUserIsCreator() async {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return;
 
-    final doc = await FirebaseFirestore.instance
-        .collection('classes')
-        .doc(widget.classId)
-        .get();
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('classes')
+          .doc(widget.classId)
+          .get();
 
-    final data = doc.data();
-    if (data != null && data['creator'] == currentUser.uid) {
-      setState(() {
-        _isCreator = true;
-        _isLoading = false;
-      });
-    } else {
-      setState(() {
-        _isCreator = false;
-        _isLoading = false;
-      });
+      final data = doc.data();
+      if (data != null && data['creator'] == currentUser.uid) {
+        setState(() {
+          _isCreator = true;
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _isCreator = false;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Firestore error: $e');
+      await Future.delayed(const Duration(seconds: 2));
+      _checkIfUserIsCreator(); // Retry once after delay
     }
   }
 
@@ -60,14 +121,28 @@ class _VideosAndNotesTabState extends State<VideosAndNotesTab> {
 
     return Scaffold(
       floatingActionButton: _isCreator
-          ? FloatingActionButton(
-              child: const Icon(Icons.add),
-              onPressed: () {
-                context.push(
-                  UploadVideosAndNotes.route,
-                  extra: {'classId': widget.classId},
-                );
-              },
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (!_isDriveAccessGranted)
+                  FloatingActionButton.extended(
+                    onPressed: _requestDriveAccess,
+                    icon: const Icon(Icons.lock_open),
+                    label: const Text("Grant Drive Access"),
+                    heroTag: 'drive_access_btn',
+                  ),
+                const SizedBox(height: 10),
+                FloatingActionButton(
+                  onPressed: () {
+                    context.push(
+                      UploadVideosAndNotes.route,
+                      extra: {'classId': widget.classId},
+                    );
+                  },
+                  heroTag: 'upload_btn',
+                  child: const Icon(Icons.add),
+                ),
+              ],
             )
           : null,
       body: StreamBuilder<QuerySnapshot>(
@@ -156,7 +231,7 @@ class _VideosAndNotesTabState extends State<VideosAndNotesTab> {
                                     );
 
                                     if (confirm == true) {
-                                      await _deleteFileFromSupabase(
+                                      await _deleteFileFromDrive(
                                           upload['filePath']);
                                       await FirebaseFirestore.instance
                                           .collection('classes')
@@ -191,23 +266,50 @@ class _VideosAndNotesTabState extends State<VideosAndNotesTab> {
     );
   }
 
-  Future<void> _deleteFileFromSupabase(String? fileName) async {
-    if (fileName == null || fileName.isEmpty) return;
+  Future<void> _requestDriveAccess() async {
+    const authUrl =
+        'https://script.google.com/macros/s/AKfycbyzss_JZv5DHmtgWXUHEi5sQlGb9AINbRAj__zVI9ir_27m46L65R-HZ0zjc08M_M1I4w/exec?action=auth';
 
     try {
-      final supabase = Supabase.instance.client;
-
-      final fullPath =
-          '${widget.classId}/$fileName'; // no need to prefix 'notes/'
-
-      debugPrint("Trying to delete: $fullPath");
-
-      await supabase.storage.from('notes').remove([fullPath]);
-      // print(fullPath);
-
-      debugPrint("File deleted successfully from Supabase: $fullPath");
+      final launched = await launchUrl(Uri.parse(authUrl),
+          mode: LaunchMode.externalApplication);
+      if (!launched) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Could not launch Drive auth URL")),
+        );
+      }
     } catch (e) {
-      debugPrint("Error deleting from Supabase: $e");
+      debugPrint("Drive auth error: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Drive auth error: $e")),
+      );
+    }
+  }
+
+  Future<void> _deleteFileFromDrive(String? fileId) async {
+    if (fileId == null || fileId.isEmpty) return;
+
+    final url = Uri.parse(
+      'https://script.google.com/macros/s/AKfycbyzss_JZv5DHmtgWXUHEi5sQlGb9AINbRAj__zVI9ir_27m46L65R-HZ0zjc08M_M1I4w/exec'
+      '?action=delete&fileId=$fileId',
+    );
+
+    try {
+      final response = await http.get(url);
+
+      if (response.statusCode == 200) {
+        debugPrint("Deleted successfully: $fileId");
+      } else {
+        debugPrint("Delete failed: ${response.statusCode}, ${response.body}");
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Delete failed: ${response.body}")),
+        );
+      }
+    } catch (e) {
+      debugPrint("Error deleting file from Drive: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error deleting file: $e")),
+      );
     }
   }
 
@@ -223,12 +325,44 @@ class _VideosAndNotesTabState extends State<VideosAndNotesTab> {
 
     final controller = YoutubePlayerController(
       initialVideoId: videoId,
-      flags: const YoutubePlayerFlags(autoPlay: false),
+      flags: const YoutubePlayerFlags(
+        autoPlay: false,
+        enableCaption: true,
+        isLive: false,
+        controlsVisibleAtStart: true,
+        disableDragSeek: false,
+      ),
     );
 
-    return YoutubePlayer(
-      controller: controller,
-      showVideoProgressIndicator: true,
+    return YoutubePlayerBuilder(
+      player: YoutubePlayer(
+        controller: controller,
+        showVideoProgressIndicator: true,
+        progressIndicatorColor: Colors.redAccent,
+      ),
+      builder: (context, player) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            player,
+            Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8),
+              child: ElevatedButton.icon(
+                onPressed: () async {
+                  final url = 'https://www.youtube.com/watch?v=$videoId';
+                  if (await canLaunchUrl(Uri.parse(url))) {
+                    await launchUrl(Uri.parse(url),
+                        mode: LaunchMode.externalApplication);
+                  }
+                },
+                icon: const Icon(Icons.open_in_new),
+                label: const Text("Open in YouTube"),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 

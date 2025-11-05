@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:mime/mime.dart';
 import 'package:path/path.dart' as path;
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../database_helpers/db_helper.dart';
 
@@ -120,8 +122,6 @@ class _UploadVideosAndNotesState extends State<UploadVideosAndNotes> {
   }
 
   Future<void> uploadNoteAndSaveLink() async {
-    final supabase = Supabase.instance.client;
-
     if (_selectedOption == null || _titleController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Please select a type and enter title")),
@@ -157,37 +157,54 @@ class _UploadVideosAndNotesState extends State<UploadVideosAndNotes> {
           return;
         }
 
-        final fileName = path.basename(_file!.path);
-        final storagePath = '${widget.classId}/$fileName';
-
         final fileBytes = await _file!.readAsBytes();
-        await supabase.storage.from('notes').uploadBinary(
-              storagePath,
-              fileBytes,
-              fileOptions: const FileOptions(cacheControl: '3600'),
-            );
+        final base64File = base64Encode(fileBytes);
+        final mimeType =
+            lookupMimeType(_file!.path) ?? 'application/octet-stream';
+        final fileName = path.basename(_file!.path);
 
-        final publicUrl =
-            supabase.storage.from('notes').getPublicUrl(storagePath);
-
-        await dbHelper.saveNotes(
-          classId: widget.classId,
-          title: _titleController.text,
-          description: _descriptionController.text,
-          fileUrl: publicUrl,
+        final uri = Uri.parse(
+          'https://script.google.com/macros/s/AKfycbyzss_JZv5DHmtgWXUHEi5sQlGb9AINbRAj__zVI9ir_27m46L65R-HZ0zjc08M_M1I4w/exec',
         );
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Note uploaded successfully!")),
-        );
+        final response = await http.post(uri, body: {
+          'action': 'upload',
+          'file': base64File,
+          'filename': fileName,
+          'mimeType': mimeType,
+          'title': _titleController.text,
+          'description': _descriptionController.text,
+        });
 
-        // Clear form
-        _file = null;
-        _titleController.clear();
-        _descriptionController.clear();
-        _youtubeLinkController.clear();
-        setState(() {});
-        Navigator.pop(context);
+        if (response.statusCode == 200) {
+          final json = jsonDecode(response.body);
+          final fileUrl = json['fileUrl'];
+          final fileId = json['fileId'];
+
+          await dbHelper.saveNotes(
+            classId: widget.classId,
+            title: _titleController.text,
+            description: _descriptionController.text,
+            fileUrl: fileUrl,
+            fileId: fileId,
+          );
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Note uploaded successfully!")),
+          );
+
+          _file = null;
+          _titleController.clear();
+          _descriptionController.clear();
+          _youtubeLinkController.clear();
+          setState(() {});
+          Navigator.pop(context);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Upload failed: ${response.body}")),
+          );
+          print(response.body);
+        }
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(

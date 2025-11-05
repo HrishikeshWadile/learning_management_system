@@ -62,6 +62,7 @@ dependencies:
   photo_view: ^0.15.0
   path_provider: ^2.1.5
   dio: ^5.8.0+1
+  shared_preferences: ^2.5.3
 #  google_sign_in_android: ^7.0.1
 #  google_sign_in_ios: ^6.0.1
 #  file_picker: ^8.3.1
